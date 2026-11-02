@@ -9,7 +9,10 @@ export const API_BASE_URL = getApiBaseUrl();
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 130_000
+  timeout: 130_000,
+  headers: {
+    "Content-Type": "application/json"
+  }
 });
 
 export async function getHealth() {
@@ -24,6 +27,7 @@ export async function ingestGithubRepository(input) {
 
 export async function uploadPdfDocuments(files) {
   const formData = new FormData();
+
   for (const file of files) {
     formData.append("documents", file, file.name);
   }
@@ -31,18 +35,25 @@ export async function uploadPdfDocuments(files) {
   const response = await api.post("/projects/documents", formData, {
     headers: { "Content-Type": null }
   });
+
   return response.data;
 }
 
 export async function analyzeProject(projectId) {
-  const response = await api.post(`/projects/${encodeURIComponent(projectId)}/analyze`, undefined, {
-    timeout: 90_000
-  });
+  const response = await api.post(
+    `/projects/${encodeURIComponent(projectId)}/analyze`,
+    undefined,
+    { timeout: 90_000 }
+  );
+
   return response.data;
 }
 
 export async function ingestPullRequest(pullRequestUrl) {
-  const response = await api.post("/pull-requests/from-github", { pullRequestUrl });
+  const response = await api.post("/pull-requests/from-github", {
+    pullRequestUrl
+  });
+
   return response.data;
 }
 
@@ -52,26 +63,36 @@ export async function analyzePullRequest(pullRequestUrl) {
     { pullRequestUrl },
     { timeout: 90_000 }
   );
+
   return response.data;
 }
 
 export function getApiErrorMessage(error) {
   const responseError = error?.response?.data?.error;
-  if (typeof responseError?.message === "string" && responseError.message.trim()) {
+
+  if (
+    typeof responseError?.message === "string" &&
+    responseError.message.trim()
+  ) {
     return responseError.message;
   }
+
   if (error?.code === "ECONNABORTED") {
     return "The request timed out. Analysis requests are limited to 90 seconds; check the backend and analysis service before retrying.";
   }
+
   if (error?.code === "ERR_NETWORK") {
     return `Could not connect to the backend at ${API_BASE_URL}. Check that it is running and that VITE_API_URL is correct.`;
   }
+
   if (!error?.response && error instanceof Error) {
     return error.message;
   }
+
   if (!error?.response) {
     return `Could not connect to the backend at ${API_BASE_URL}. Check that it is running and that VITE_API_URL is correct.`;
   }
+
   return "The backend returned an unexpected response. Please try again.";
 }
 
