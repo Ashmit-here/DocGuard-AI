@@ -36,10 +36,10 @@ function requestBody(request) {
   return typeof request.data === 'string' ? JSON.parse(request.data) : request.data;
 }
 
-test('uses the configured API URL and defaults to the backend port 3000', () => {
+test('uses a configured API URL and defaults to the same-origin API path', () => {
   assert.equal(getApiBaseUrl({ VITE_API_URL: 'http://localhost:8000/api/' }), 'http://localhost:8000/api');
-  assert.equal(getApiBaseUrl({ VITE_API_URL: '' }), 'http://localhost:3000/api');
-  assert.equal(API_BASE_URL, 'http://localhost:3000/api');
+  assert.equal(getApiBaseUrl({ VITE_API_URL: '' }), '/api');
+  assert.equal(API_BASE_URL, '/api');
   assert.equal(api.defaults.baseURL, API_BASE_URL);
 });
 
@@ -92,6 +92,7 @@ test('analyzes the ingested project reference without resubmitting its repositor
   assert.equal(requests[0].method, 'post');
   assert.equal(requests[0].url, '/projects/project-id/analyze');
   assert.equal(requests[0].data, undefined);
+  assert.equal(requests[0].timeout, 90_000);
   assert.deepEqual(result.analysis.findings, []);
 });
 
@@ -105,7 +106,7 @@ test('submits pull request URLs to the change-context endpoint', async (testCont
   });
 });
 
-test('submits pull request URLs to the analysis endpoint with its longer execution timeout', async (testContext) => {
+test('submits pull request URLs to the analysis endpoint with the 90-second timeout', async (testContext) => {
   const requests = installAdapter(testContext, {
     pullRequest: { number: 42 },
     changeContext: {},
@@ -114,7 +115,7 @@ test('submits pull request URLs to the analysis endpoint with its longer executi
   await analyzePullRequest('https://github.com/example/project/pull/42');
 
   assert.equal(requests[0].url, '/pull-requests/analyze');
-  assert.equal(requests[0].timeout, 900_000);
+  assert.equal(requests[0].timeout, 90_000);
   assert.deepEqual(requestBody(requests[0]), {
     pullRequestUrl: 'https://github.com/example/project/pull/42',
   });
@@ -125,6 +126,7 @@ test('extracts structured backend error messages for the UI', () => {
     getApiErrorMessage({ response: { data: { error: { code: 'PDF_ENCRYPTED', message: 'PDF is encrypted.' } } } }),
     'PDF is encrypted.',
   );
+  assert.match(getApiErrorMessage({ code: 'ECONNABORTED' }), /limited to 90 seconds/);
   assert.match(getApiErrorMessage({ code: 'ERR_NETWORK' }), /Could not connect to the backend/);
   assert.equal(getApiErrorMessage(new Error('The analysis response was incomplete.')), 'The analysis response was incomplete.');
 });

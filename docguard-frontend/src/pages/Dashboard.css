@@ -6,6 +6,7 @@
 .dash-lead > p { overflow-wrap: anywhere; }
 
 .summary { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--line); }
+.dashboard-summary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .summary > div { padding: 24px 0; }
 .summary > div + div { padding-left: 24px; border-left: 1px solid var(--line); }
 .summary dt { color: var(--muted); }
@@ -22,8 +23,10 @@
 
 @media (max-width: 900px) {
   .dash-grid { grid-template-columns: 1fr; gap: 32px; }
+  .dashboard-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 560px) {
   .summary { grid-template-columns: 1fr; }
+  .dashboard-summary { grid-template-columns: 1fr; }
   .summary > div + div { padding-left: 0; border-left: none; border-top: 1px solid var(--line); }
 }

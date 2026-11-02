@@ -2,7 +2,8 @@ import { getAnalyserOutputSchema, validateAnalyserOutput } from './analyser-resp
 import { HttpError } from '../utils/http-error.js';
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:11434';
-const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+const MAX_ANALYSIS_TIMEOUT_MS = 85_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = MAX_ANALYSIS_TIMEOUT_MS;
 const DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_INPUT_BYTES = 15 * 1024 * 1024;
 const ANALYSER_SYSTEM_PROMPT = [
@@ -49,11 +50,11 @@ export function getOllamaConfiguration(environment = process.env) {
   return {
     endpoint: new URL('/api/chat', baseUrl).toString(),
     model: typeof model === 'string' ? model.trim() : '',
-    requestTimeoutMs: readPositiveInteger(
+    requestTimeoutMs: Math.min(readPositiveInteger(
       environment.OLLAMA_REQUEST_TIMEOUT_MS,
       DEFAULT_REQUEST_TIMEOUT_MS,
       'OLLAMA_REQUEST_TIMEOUT_MS',
-    ),
+    ), MAX_ANALYSIS_TIMEOUT_MS),
     maxResponseBytes: readPositiveInteger(
       environment.OLLAMA_MAX_RESPONSE_BYTES,
       DEFAULT_MAX_RESPONSE_BYTES,

@@ -92,6 +92,12 @@ test('prepares separate original source and PDF documentation with project metad
 });
 
 test('requires a configured model and validates the Ollama base URL', async () => {
+  assert.equal(getOllamaConfiguration({ OLLAMA_MODEL: 'test-model' }).requestTimeoutMs, 85_000);
+  assert.equal(getOllamaConfiguration({
+    OLLAMA_MODEL: 'test-model',
+    OLLAMA_REQUEST_TIMEOUT_MS: '900000',
+  }).requestTimeoutMs, 85_000);
+
   assert.throws(
     () => getOllamaConfiguration({ OLLAMA_BASE_URL: 'https://user:secret@example.com' }),
     (error) => error.code === 'ANALYSER_CONFIGURATION_ERROR',
@@ -196,6 +202,34 @@ test('rejects oversized prepared inputs without contacting Ollama', async () => 
     analyzeWithOllama(PROJECT, {
       configuration: configuration({ maxInputBytes: 10 }),
       fetchImpl: async () => assert.fail('must not fetch an oversized input'),
+    }),
+    (error) => error.statusCode === 413 && error.code === 'ANALYSER_INPUT_TOO_LARGE',
+  );
+});
+
+test('accepts analyser inputs below and exactly at the byte limit, and rejects one byte below required size', async () => {
+  let serializedInput;
+  const captureInput = async (_url, options) => {
+    serializedInput = JSON.parse(options.body).messages[1].content;
+    return ollamaResponse(createAnalyserOutput());
+  };
+  await analyzeWithOllama(PROJECT, {
+    configuration: configuration(),
+    fetchImpl: captureInput,
+  });
+  const inputBytes = Buffer.byteLength(serializedInput, 'utf8');
+
+  for (const maxInputBytes of [inputBytes, inputBytes + 1]) {
+    await analyzeWithOllama(PROJECT, {
+      configuration: configuration({ maxInputBytes }),
+      fetchImpl: async () => ollamaResponse(createAnalyserOutput()),
+    });
+  }
+
+  await assert.rejects(
+    analyzeWithOllama(PROJECT, {
+      configuration: configuration({ maxInputBytes: inputBytes - 1 }),
+      fetchImpl: async () => assert.fail('must reject before contacting Ollama'),
     }),
     (error) => error.statusCode === 413 && error.code === 'ANALYSER_INPUT_TOO_LARGE',
   );

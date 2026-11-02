@@ -1,4 +1,25 @@
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { createApp } from './app.js';
+
+if (typeof process.loadEnvFile === 'function') {
+  try {
+    process.loadEnvFile();
+  } catch (cwdError) {
+    if (cwdError?.code === 'ENOENT') {
+      try {
+        const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+        process.loadEnvFile(resolve(projectRoot, '.env'));
+      } catch (rootError) {
+        if (rootError?.code !== 'ENOENT') {
+          throw rootError;
+        }
+      }
+    } else {
+      throw cwdError;
+    }
+  }
+}
 
 function readPort(portValue) {
   if (portValue === undefined || portValue === '') {
@@ -14,13 +35,14 @@ function readPort(portValue) {
 }
 
 const port = readPort(process.env.PORT);
+const host = process.env.HOST || '127.0.0.1';
 const server = createApp();
 
 server.on('error', (error) => {
-  console.error(`Unable to start the DocGuard AI backend on port ${port}:`, error);
+  console.error(`Unable to start the DocGuard AI backend on ${host}:${port}:`, error);
   process.exitCode = 1;
 });
 
-server.listen(port, () => {
-  console.log(`DocGuard AI backend listening on port ${port}.`);
+server.listen(port, host, () => {
+  console.log(`DocGuard AI backend listening on ${host}:${port}.`);
 });

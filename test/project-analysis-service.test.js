@@ -82,6 +82,8 @@ test('preserves project file paths and original content while classifying file t
       name: 'example-project',
       files: [
         { path: 'src/example.JS', content: sourceContent },
+        { path: 'src/page.html', content: '<main>Original UI</main>' },
+        { path: 'src/styles.css', content: 'main { color: navy; }' },
         { path: 'docs/README.MD', content: documentationContent },
         { path: 'assets/data.json', content: '{"value": 1}' },
       ],
@@ -93,6 +95,8 @@ test('preserves project file paths and original content while classifying file t
       name: 'example-project',
       files: [
         { path: 'src/example.JS', content: sourceContent, category: 'source' },
+        { path: 'src/page.html', content: '<main>Original UI</main>', category: 'source' },
+        { path: 'src/styles.css', content: 'main { color: navy; }', category: 'source' },
         { path: 'docs/README.MD', content: documentationContent, category: 'documentation' },
         { path: 'assets/data.json', content: '{"value": 1}', category: 'other' },
       ],
@@ -158,6 +162,43 @@ test('rejects duplicate file paths', () => {
   }), {
     code: 'DUPLICATE_FILE_PATH',
     statusCode: 400,
+  });
+});
+
+test('enforces individual project file limits below, at, and above the byte boundary', () => {
+  const limits = { maxFileBytes: 5, maxTotalFileBytes: 10 };
+  const input = (content) => ({
+    project: { name: 'bounded', files: [{ path: 'src/app.js', content }] },
+  });
+
+  assert.equal(processProjectInput(input('1234'), { limits }).project.files[0].content, '1234');
+  assert.equal(processProjectInput(input('12345'), { limits }).project.files[0].content, '12345');
+  assert.throws(() => processProjectInput(input('123456'), { limits }), {
+    code: 'PROJECT_FILE_TOO_LARGE',
+    statusCode: 413,
+  });
+  assert.throws(() => processProjectInput(input('ééé'), { limits }), {
+    code: 'PROJECT_FILE_TOO_LARGE',
+    statusCode: 413,
+  });
+});
+
+test('enforces aggregate project content limits at and above the byte boundary', () => {
+  const limits = { maxFileBytes: 6, maxTotalFileBytes: 10 };
+  const input = (secondContent) => ({
+    project: {
+      name: 'bounded',
+      files: [
+        { path: 'src/first.js', content: '12345' },
+        { path: 'src/second.js', content: secondContent },
+      ],
+    },
+  });
+
+  assert.equal(processProjectInput(input('12345'), { limits }).project.files.length, 2);
+  assert.throws(() => processProjectInput(input('123456'), { limits }), {
+    code: 'PROJECT_SIZE_LIMIT_EXCEEDED',
+    statusCode: 413,
   });
 });
 

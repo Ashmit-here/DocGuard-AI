@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 import { WorkflowProvider } from "./WorkflowContext";
 
 import MainLayout from "./layouts/MainLayout";
@@ -44,6 +44,16 @@ function App() {
           <Route
             path="/settings"
             element={<Settings />}
+          />
+
+          <Route
+            path="*"
+            element={(
+              <div className="page empty">
+                <strong>Page not found</strong>
+                <Link className="link-button" to="/">Return to dashboard</Link>
+              </div>
+            )}
           />
 
         </Route>

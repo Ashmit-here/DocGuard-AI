@@ -1,8 +1,19 @@
 import { HttpError } from './http-error.js';
 
-const MAX_REQUEST_SIZE = 10 * 1024 * 1024;
+const DEFAULT_MAX_REQUEST_SIZE = 20 * 1024 * 1024;
 
-export function readJsonBody(request) {
+function getMaxRequestSize() {
+  const configuredValue = process.env.JSON_MAX_REQUEST_BYTES;
+  if (configuredValue === undefined || configuredValue === '') return DEFAULT_MAX_REQUEST_SIZE;
+  const parsedValue = Number(configuredValue);
+  if (!Number.isSafeInteger(parsedValue) || parsedValue < 1) {
+    throw new Error('JSON_MAX_REQUEST_BYTES must be a positive safe integer.');
+  }
+  return parsedValue;
+}
+
+export function readJsonBody(request, { maxRequestBytes = getMaxRequestSize() } = {}) {
+  const limitMessage = `JSON request body exceeds the configured ${maxRequestBytes}-byte limit.`;
   const contentType = request.headers['content-type']?.split(';', 1)[0].trim().toLowerCase();
   if (contentType !== 'application/json') {
     request.resume();
@@ -10,9 +21,9 @@ export function readJsonBody(request) {
   }
 
   const contentLength = Number(request.headers['content-length']);
-  if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_SIZE) {
+  if (Number.isFinite(contentLength) && contentLength > maxRequestBytes) {
     request.resume();
-    return Promise.reject(new HttpError(413, 'REQUEST_TOO_LARGE', 'JSON request body exceeds the 10 MiB limit.'));
+    return Promise.reject(new HttpError(413, 'REQUEST_TOO_LARGE', limitMessage));
   }
 
   return new Promise((resolve, reject) => {
@@ -29,7 +40,7 @@ export function readJsonBody(request) {
 
     function handleData(chunk) {
       receivedBytes += chunk.length;
-      if (receivedBytes > MAX_REQUEST_SIZE) {
+      if (receivedBytes > maxRequestBytes) {
         tooLarge = true;
         chunks.length = 0;
         return;
@@ -44,7 +55,7 @@ export function readJsonBody(request) {
       cleanUp();
 
       if (tooLarge) {
-        reject(new HttpError(413, 'REQUEST_TOO_LARGE', 'JSON request body exceeds the 10 MiB limit.'));
+        reject(new HttpError(413, 'REQUEST_TOO_LARGE', limitMessage));
         return;
       }
 

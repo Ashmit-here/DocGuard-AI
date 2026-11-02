@@ -7,6 +7,7 @@ const {
   queryOllama
 } = require("./detector-core.cjs");
 const { detectRemovedResponseFields } = require("./response-field-fallback.cjs");
+const { detectChangedTimeoutValues } = require("./configuration-value-fallback.cjs");
 
 function normalizeDocuments(docs) {
   const list = typeof docs === "string" ? [{ file: "README.md", content: docs }] : docs;
@@ -81,7 +82,8 @@ async function analyze({
   updatedCode,
   codeFile = "app.js",
   callModel,
-  modelOptions = {}
+  modelOptions = {},
+  skipModel = false
 }) {
   for (const [name, value] of Object.entries({ diff, originalCode, updatedCode })) {
     if (typeof value !== "string") throw new TypeError(`${name} must be a string`);
@@ -90,12 +92,20 @@ async function analyze({
   if (typeof codeFile !== "string" || codeFile.length === 0) throw new TypeError("codeFile must be a non-empty string");
   const documentation = documents.map(doc => `### ${doc.file}\n${doc.content}`).join("\n\n");
   const changedLines = addedOrRemovedLines(diff);
-  const rawDeterministic = documents.flatMap(doc => detectRemovedResponseFields({
-    originalCode,
-    updatedCode,
-    diff,
-    documentation: doc.content
-  }).map(item => ({ ...item, documentFile: doc.file })));
+  const rawDeterministic = documents.flatMap(doc => [
+    ...detectRemovedResponseFields({
+      originalCode,
+      updatedCode,
+      diff,
+      documentation: doc.content
+    }),
+    ...detectChangedTimeoutValues({
+      originalCode,
+      updatedCode,
+      diff,
+      documentation: doc.content
+    })
+  ].map(item => ({ ...item, documentFile: doc.file })));
   const deterministicFindings = [];
   const deterministicSentences = new Set();
   for (const item of rawDeterministic) {
@@ -115,6 +125,23 @@ async function analyze({
         model: { status: "not-run-no-code-changes" },
         counts: {
           changedLines: 0,
+          modelFindingsReturned: 0,
+          deterministicRuleMatches: deterministicFindings.length,
+          unverifiedSuggestions: 0
+        }
+      }
+    };
+  }
+
+  if (skipModel) {
+    return {
+      contract: "drift-engine/v1",
+      findings: deterministicFindings,
+      suggestions: [],
+      diagnostics: {
+        model: { status: "not-run-deterministic-only" },
+        counts: {
+          changedLines: changedLines.length,
           modelFindingsReturned: 0,
           deterministicRuleMatches: deterministicFindings.length,
           unverifiedSuggestions: 0

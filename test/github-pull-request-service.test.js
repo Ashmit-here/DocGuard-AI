@@ -349,7 +349,8 @@ test('handles GitHub API not-found, rate-limit, and upstream errors without leak
       ingestGitHubPullRequest({ pullRequestUrl: PULL_REQUEST_URL }, { fetchImpl, limits: TEST_LIMITS }),
       (error) => error.statusCode === expectedStatus
         && error.code === code
-        && !error.message.includes('private upstream detail'),
+        && !error.message.includes('private upstream detail')
+        && (code !== 'GITHUB_RATE_LIMITED' || error.message.includes('GITHUB_TOKEN')),
     );
   }
 });

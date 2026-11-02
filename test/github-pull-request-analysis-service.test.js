@@ -54,6 +54,7 @@ test('analyzes exact PR revisions and keeps deterministic findings separate from
     {
       ingestPullRequest: async (_input, options) => {
         assert.equal(options.includeSourceContents, true);
+        assert.ok(options.signal instanceof AbortSignal);
         return createPullRequestResult();
       },
       ingestRepository: async (input, options) => {
@@ -111,6 +112,25 @@ test('analyzes exact PR revisions and keeps deterministic findings separate from
   assert.equal(result.driftAnalysis.suggestions[0].verification, 'unverified-model-suggestion');
   assert.equal(result.driftAnalysis.suggestions[0].outdated, null);
   assert.equal('sourceSnapshots' in result, false);
+});
+
+test('returns a structured timeout error when PR analysis exceeds its execution budget', async () => {
+  await assert.rejects(
+    analyzeGitHubPullRequest(
+      { pullRequestUrl: 'https://github.com/example/project/pull/42' },
+      {
+        analysisTimeoutMs: 5,
+        ingestPullRequest: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 15));
+          return createPullRequestResult();
+        },
+      },
+    ),
+    (error) => error instanceof HttpError
+      && error.statusCode === 504
+      && error.code === 'ANALYSIS_TIMEOUT'
+      && /time limit/.test(error.message),
+  );
 });
 
 test('does not claim PR drift when no readable documentation exists at the head revision', async () => {

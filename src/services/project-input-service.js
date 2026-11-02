@@ -1,9 +1,13 @@
 import { extname, win32 } from 'node:path';
 import { HttpError } from '../utils/http-error.js';
 
+const DEFAULT_LIMITS = {
+  maxFileBytes: 5 * 1024 * 1024,
+  maxTotalFileBytes: 12 * 1024 * 1024,
+};
 const SOURCE_EXTENSIONS = new Set([
-  '.bash', '.c', '.cc', '.cjs', '.cpp', '.cs', '.cts', '.cxx', '.dart', '.go',
-  '.h', '.hpp', '.hxx', '.java', '.js', '.jsx', '.kt', '.kts', '.lua', '.m',
+  '.bash', '.c', '.cc', '.cjs', '.cpp', '.cs', '.css', '.cts', '.cxx', '.dart', '.go',
+  '.h', '.hpp', '.htm', '.html', '.hxx', '.java', '.js', '.jsx', '.kt', '.kts', '.lua', '.m',
   '.mm', '.mts', '.mjs', '.php', '.pl', '.pm', '.ps1', '.py', '.pyi',
   '.rb', '.rs', '.scala', '.sc', '.sh', '.sql', '.swift', '.ts', '.tsx', '.vue',
   '.svelte', '.zsh',
@@ -14,6 +18,23 @@ const DOCUMENTATION_EXTENSIONS = new Set([
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readLimit(environmentName, defaultValue) {
+  const value = process.env[environmentName];
+  if (value === undefined || value === '') return defaultValue;
+  const parsedValue = Number(value);
+  if (!Number.isSafeInteger(parsedValue) || parsedValue < 1) {
+    throw new Error(`${environmentName} must be a positive safe integer.`);
+  }
+  return parsedValue;
+}
+
+export function getProjectInputLimits() {
+  return {
+    maxFileBytes: readLimit('PROJECT_MAX_FILE_BYTES', DEFAULT_LIMITS.maxFileBytes),
+    maxTotalFileBytes: readLimit('PROJECT_MAX_TOTAL_FILE_BYTES', DEFAULT_LIMITS.maxTotalFileBytes),
+  };
 }
 
 function validateProjectPath(filePath, index) {
@@ -55,7 +76,7 @@ function classifyFile(filePath) {
   return 'other';
 }
 
-export function processProjectInput(input) {
+export function processProjectInput(input, { limits = getProjectInputLimits() } = {}) {
   if (!isRecord(input) || !isRecord(input.project)) {
     throw new HttpError(400, 'INVALID_PROJECT', 'Request body must contain a project object.');
   }
@@ -70,6 +91,7 @@ export function processProjectInput(input) {
   }
 
   const seenPaths = new Set();
+  let totalFileBytes = 0;
   const processedFiles = files.map((file, index) => {
     if (!isRecord(file)) {
       throw new HttpError(400, 'INVALID_FILE', `File at index ${index} must be an object.`);
@@ -83,6 +105,23 @@ export function processProjectInput(input) {
 
     if (typeof file.content !== 'string') {
       throw new HttpError(400, 'INVALID_FILE_CONTENT', `Content for "${filePath}" must be a string.`);
+    }
+
+    const fileBytes = Buffer.byteLength(file.content, 'utf8');
+    if (fileBytes > limits.maxFileBytes) {
+      throw new HttpError(
+        413,
+        'PROJECT_FILE_TOO_LARGE',
+        `File "${filePath}" exceeds the ${limits.maxFileBytes}-byte project file limit.`,
+      );
+    }
+    totalFileBytes += fileBytes;
+    if (totalFileBytes > limits.maxTotalFileBytes) {
+      throw new HttpError(
+        413,
+        'PROJECT_SIZE_LIMIT_EXCEEDED',
+        `Project file contents exceed the ${limits.maxTotalFileBytes}-byte combined limit.`,
+      );
     }
 
     return {

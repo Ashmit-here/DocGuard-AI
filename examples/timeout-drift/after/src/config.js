@@ -1,0 +1,1 @@
+export const REQUEST_TIMEOUT_SECONDS = 30;

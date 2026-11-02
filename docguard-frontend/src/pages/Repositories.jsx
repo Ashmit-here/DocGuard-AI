@@ -12,6 +12,12 @@ import {
 
 import "./Repositories.css";
 
+const PDF_UPLOAD_LIMITS = {
+  maxFiles: 5,
+  maxFileBytes: 10 * 1024 * 1024,
+  maxAggregateBytes: 15 * 1024 * 1024
+};
+
 function getRepositoryName(repositoryUrl, fallback) {
   if (typeof fallback === "string" && fallback) return fallback;
   return repositoryUrl?.replace(/\/+$/, "").split("/").slice(-1)[0] || "GitHub repository";
@@ -47,10 +53,27 @@ const Repositories = () => {
 
   const chooseDocuments = (files) => {
     const selected = Array.from(files ?? []);
+    if (selected.length > PDF_UPLOAD_LIMITS.maxFiles) {
+      setDocuments([]);
+      setError(`Select no more than ${PDF_UPLOAD_LIMITS.maxFiles} PDF files.`);
+      return;
+    }
     const invalid = selected.find((file) => !file.name.toLowerCase().endsWith(".pdf"));
     if (invalid) {
       setDocuments([]);
       setError(`${invalid.name} is not a PDF. Select only PDF documentation.`);
+      return;
+    }
+    const oversized = selected.find((file) => file.size > PDF_UPLOAD_LIMITS.maxFileBytes);
+    if (oversized) {
+      setDocuments([]);
+      setError(`${oversized.name} exceeds the default 10 MiB per-PDF limit.`);
+      return;
+    }
+    const totalBytes = selected.reduce((total, file) => total + file.size, 0);
+    if (totalBytes > PDF_UPLOAD_LIMITS.maxAggregateBytes) {
+      setDocuments([]);
+      setError("The selected PDFs exceed the default 15 MiB combined file-size limit.");
       return;
     }
     setError("");
@@ -153,6 +176,9 @@ const Repositories = () => {
       {showForm && (
         <form className="repository-form" onSubmit={handleSubmit}>
           <h2>Analyze a public GitHub repository</h2>
+          <p className="repository-note">
+            Repository snapshot analysis returns unverified AI suggestions. Use the pull request workflow for deterministic findings tied to changed source lines.
+          </p>
           <label className="field">
             <span>Repository URL</span>
             <input
@@ -177,7 +203,7 @@ const Repositories = () => {
             <small>
               {documents.length
                 ? `${documents.length} PDF${documents.length === 1 ? "" : "s"} selected.`
-                : "Multiple PDFs are supported. Each file is uploaded before repository ingestion."}
+                : "Up to 5 PDFs, 10 MiB each and 15 MiB combined. Each file is uploaded before repository ingestion."}
             </small>
           </label>
           {error && <div className="form-error" role="alert">{error}</div>}
@@ -214,7 +240,7 @@ const Repositories = () => {
                 <th>Repository</th>
                 <th>Source files</th>
                 <th>Documentation</th>
-                <th>Findings</th>
+                <th>Verified / suggestions</th>
                 <th>Branch</th>
                 <th><span className="sr-only">Actions</span></th>
               </tr>
@@ -224,6 +250,7 @@ const Repositories = () => {
                 const name = getRepositoryName(repo.source?.repositoryUrl, repo.repositoryName);
                 const documentationCount = repo.summary?.documentationFiles ?? 0;
                 const findingCount = Array.isArray(repo.analysis?.findings) ? repo.analysis.findings.length : "—";
+                const suggestionCount = Array.isArray(repo.analysis?.suggestions) ? repo.analysis.suggestions.length : "—";
                 return (
                   <tr key={repo.projectId}>
                     <td>
@@ -232,7 +259,7 @@ const Repositories = () => {
                     </td>
                     <td>{repo.summary?.sourceFiles ?? "—"}</td>
                     <td>{documentationCount}</td>
-                    <td>{findingCount}</td>
+                    <td>{findingCount} / {suggestionCount}</td>
                     <td className="muted">{repo.source?.ref ?? "—"}</td>
                     <td>
                       {repo.source?.repositoryUrl && (

@@ -11,16 +11,40 @@ const Dashboard = () => {
   const analyzed = projects
     .filter((project) => project.analysis)
     .sort((left, right) => Date.parse(right.analyzedAt ?? 0) - Date.parse(left.analyzedAt ?? 0));
-  const findings = analyzed.flatMap((project) => (
+  const projectFindings = analyzed.flatMap((project) => (
     Array.isArray(project.analysis.findings)
       ? project.analysis.findings.map((finding, index) => ({
         ...finding,
         id: `${project.projectId}-${index}`,
         repositoryName: project.repositoryName ?? project.source?.repositoryUrl ?? "Project",
-        projectId: project.projectId
+        projectId: project.projectId,
+        resultTime: project.analyzedAt
       }))
       : []
   ));
+  const pullRequestFindings = pullRequests.flatMap((item, requestIndex) => (
+    Array.isArray(item.driftAnalysis?.findings)
+      ? item.driftAnalysis.findings.map((finding, index) => ({
+        ...finding,
+        id: `pr-${requestIndex}-${finding.id ?? index}`,
+        repositoryName: item.source?.repositoryUrl ?? "Pull request",
+        resultTime: item.fetchedAt
+      }))
+      : []
+  ));
+  const findings = [...projectFindings, ...pullRequestFindings]
+    .sort((left, right) => Date.parse(right.resultTime ?? 0) - Date.parse(left.resultTime ?? 0));
+  const suggestions = [
+    ...analyzed.flatMap((project) => (
+      Array.isArray(project.analysis.suggestions)
+        ? project.analysis.suggestions.map((suggestion) => suggestion)
+        : []
+    )),
+    ...pullRequests.flatMap((item) => (
+      Array.isArray(item.driftAnalysis?.suggestions) ? item.driftAnalysis.suggestions : []
+    ))
+  ];
+  const completedChecks = analyzed.length + pullRequests.filter((item) => item.driftAnalysis).length;
   const urgentFinding = findings[0];
   const recentProjects = [...projects].sort((a, b) => (
     Date.parse(b.analyzedAt ?? b.createdAt ?? 0) - Date.parse(a.analyzedAt ?? a.createdAt ?? 0)
@@ -34,7 +58,7 @@ const Dashboard = () => {
           <h1>{projects.length ? "Workspace overview" : "Connect a repository to get started"}</h1>
           <p>
             {projects.length
-              ? "Projects and findings returned by the backend during this browser session."
+              ? "Repository analyses and pull request checks completed during this browser session."
               : "Run a backend analysis of a public GitHub repository and its documentation."}
           </p>
         </div>
@@ -44,16 +68,17 @@ const Dashboard = () => {
         </Link>
       </header>
 
-      <dl className="summary">
+      <dl className="summary dashboard-summary">
         <div><dt>Repositories submitted</dt><dd>{projects.length}</dd></div>
-        <div><dt>Completed analyses</dt><dd>{analyzed.length}</dd></div>
-        <div><dt>Backend findings</dt><dd>{findings.length}</dd></div>
+        <div><dt>Completed checks</dt><dd>{completedChecks}</dd></div>
+        <div><dt>Verified findings</dt><dd>{findings.length}</dd></div>
+        <div><dt>AI suggestions</dt><dd>{suggestions.length}</dd></div>
       </dl>
 
       {urgentFinding && (
         <section className="dash-lead" aria-labelledby="lead-title">
           <div className="dash-lead-meta">
-            <h2 id="lead-title">Latest finding</h2>
+            <h2 id="lead-title">Latest verified finding</h2>
             <SeverityTag severity={urgentFinding.severity} />
             <span className="muted">{urgentFinding.repositoryName}</span>
           </div>
@@ -82,7 +107,9 @@ const Dashboard = () => {
                       {project.analyzedAt ? ` · analyzed ${new Date(project.analyzedAt).toLocaleString()}` : " · not analyzed"}
                     </div>
                   </div>
-                  <span>{Array.isArray(project.analysis?.findings) ? project.analysis.findings.length : "—"} findings</span>
+                  <span>
+                    {Array.isArray(project.analysis?.findings) ? project.analysis.findings.length : 0} verified · {Array.isArray(project.analysis?.suggestions) ? project.analysis.suggestions.length : 0} suggestions
+                  </span>
                 </li>
               ))}
             </ul>
@@ -101,7 +128,9 @@ const Dashboard = () => {
                     <strong>{item.pullRequest?.title ?? item.pullRequest?.url ?? "Pull request"}</strong>
                     <div className="muted">{item.source?.repositoryUrl}</div>
                   </div>
-                  <span>{item.changeContext?.summary?.totalFiles ?? 0} files · changes fetched</span>
+                  <span>
+                    {item.changeContext?.summary?.totalFiles ?? 0} files · {item.driftAnalysis?.findings?.length ?? 0} verified · {item.driftAnalysis?.suggestions?.length ?? 0} suggestions
+                  </span>
                 </li>
               ))}
             </ul>
@@ -109,8 +138,12 @@ const Dashboard = () => {
         </section>
       </div>
 
-      {!urgentFinding && analyzed.length > 0 && (
-        <p className="dashboard-clean-note">The most recent backend analysis returned no findings.</p>
+      {!urgentFinding && (analyzed.length > 0 || pullRequests.length > 0) && (
+        <p className="dashboard-clean-note">
+          {suggestions.length > 0
+            ? `No verified drift findings are available yet. ${suggestions.length} model suggestion${suggestions.length === 1 ? "" : "s"} need human review.`
+            : "The completed checks returned no verified drift findings."}
+        </p>
       )}
     </div>
   );

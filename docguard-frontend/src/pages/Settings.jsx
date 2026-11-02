@@ -1,48 +1,17 @@
-import { useState } from "react";
-import { Save } from "lucide-react";
-
+import { API_BASE_URL } from "../services/api";
 import { useWorkflow } from "../workflow-context";
 
 import "./Settings.css";
 
-const STORAGE_KEY = "docguard-settings";
-const defaults = {
-  notifications: true,
-  criticalAlerts: true,
-  defaultDocumentation: "README.md"
-};
-
-const loadPreferences = () => {
-  try {
-    return { ...defaults, ...JSON.parse(localStorage.getItem(STORAGE_KEY)) };
-  } catch {
-    return defaults;
-  }
-};
-
 const Settings = () => {
   const { backendStatus } = useWorkflow();
-  const [prefs, setPrefs] = useState(loadPreferences);
-  const [saved, setSaved] = useState(false);
-
-  const update = (key, value) => setPrefs((p) => ({ ...p, [key]: value }));
-
-  const handleSave = () => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
-    } catch {
-      /* storage unavailable; keep going */
-    }
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
-  };
 
   return (
     <div className="page settings-page">
       <header className="page-head">
         <div>
-          <h1>Settings</h1>
-          <p>Choose how DocGuard connects, notifies and checks.</p>
+          <h1>Settings and service status</h1>
+          <p>Configuration is managed by the backend environment and frontend build.</p>
         </div>
       </header>
 
@@ -61,68 +30,33 @@ const Settings = () => {
                 : "Checking"}
           </span>
         </div>
+        <div className="settings-row">
+          <div>
+            <strong>API base URL</strong>
+            <p>The frontend sends requests to this backend API path.</p>
+          </div>
+          <code>{API_BASE_URL}</code>
+        </div>
         <p className="settings-note">
-          The backend accepts public GitHub repositories. Any GitHub token must remain configured on the backend, never in this frontend.
+          In development, <code>/api</code> is proxied to the backend on port 3000. For a separate production API, set <code>VITE_API_URL</code> at build time and allow the frontend origin with <code>CORS_ALLOWED_ORIGINS</code>.
         </p>
       </section>
 
       <section className="settings-section">
-        <h2>Notifications</h2>
-
-        <label className="settings-row">
-          <div>
-            <strong>Notify me about results</strong>
-            <p>Get a notification when a check finishes.</p>
-          </div>
-          <input
-            type="checkbox"
-            className="switch"
-            checked={prefs.notifications}
-            onChange={(e) => update("notifications", e.target.checked)}
-          />
-        </label>
-
-        <label className="settings-row">
-          <div>
-            <strong>Alert me to critical issues</strong>
-            <p>Send an alert as soon as a critical mismatch is found.</p>
-          </div>
-          <input
-            type="checkbox"
-            className="switch"
-            checked={prefs.criticalAlerts}
-            disabled={!prefs.notifications}
-            onChange={(e) => update("criticalAlerts", e.target.checked)}
-          />
-        </label>
+        <h2>Analysis behavior</h2>
+        <ul className="settings-list">
+          <li>Repository snapshots produce unverified AI suggestions because they do not include a before-and-after source change.</li>
+          <li>Pull request checks can report deterministic findings from changed lines and show model suggestions separately.</li>
+          <li>Results stay in this browser tab. Backend project references are temporary and expire after 15 minutes by default.</li>
+        </ul>
       </section>
 
       <section className="settings-section">
-        <h2>Checks</h2>
-        <label className="settings-row">
-          <div>
-            <strong>Default documentation source</strong>
-            <p>What DocGuard compares code against when you don’t upload a file.</p>
-          </div>
-          <select
-            value={prefs.defaultDocumentation}
-            onChange={(e) => update("defaultDocumentation", e.target.value)}
-          >
-            <option value="README.md">README.md</option>
-            <option value="Custom Upload">Custom upload</option>
-          </select>
-        </label>
+        <h2>Backend configuration</h2>
+        <p>
+          Set <code>OLLAMA_BASE_URL</code> and the installed <code>OLLAMA_MODEL</code> on the backend. An optional <code>GITHUB_TOKEN</code> can raise GitHub API rate limits; keep it in a trusted backend environment and never put it in frontend settings.
+        </p>
       </section>
-
-      <div className="settings-save">
-        <span className="settings-saved" role="status">
-          {saved ? "Preferences saved" : ""}
-        </span>
-        <button className="btn" onClick={handleSave}>
-          <Save size={16} />
-          Save preferences
-        </button>
-      </div>
     </div>
   );
 };

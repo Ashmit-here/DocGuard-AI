@@ -9,6 +9,7 @@ import {
 } from './pdf-document-service.js';
 import { HttpError } from '../utils/http-error.js';
 import { parseGitHubRepositoryUrl, validateGitHubRef } from '../utils/github-repository-url.js';
+import { combineAbortSignals } from '../utils/combine-abort-signals.js';
 
 const DEFAULT_LIMITS = {
   maxFiles: 50,
@@ -39,9 +40,9 @@ const BINARY_EXTENSIONS = new Set([
 ]);
 const SOURCE_CODE_EXTENSIONS = new Set([
   '.asm', '.bash', '.bat', '.c', '.cc', '.cjs', '.clj', '.cljs', '.cljc',
-  '.cmd', '.cpp', '.cs', '.cts', '.cxx', '.dart', '.ex', '.exs', '.erl',
+  '.cmd', '.cpp', '.cs', '.css', '.cts', '.cxx', '.dart', '.ex', '.exs', '.erl',
   '.fs', '.fsi', '.fsx', '.go', '.gradle', '.groovy', '.h', '.hpp', '.hrl',
-  '.hs', '.java', '.jl', '.js', '.jsx', '.kt', '.kts', '.lua', '.m', '.mm',
+  '.hs', '.htm', '.html', '.java', '.jl', '.js', '.jsx', '.kt', '.kts', '.lua', '.m', '.mm',
   '.mts', '.mjs', '.nim', '.nix', '.php', '.pl', '.pm', '.ps1', '.psm1',
   '.py', '.pyi', '.r', '.rb', '.rs', '.scala', '.sc', '.sh', '.sql', '.swift',
   '.tcl', '.ts', '.tsx', '.v', '.vhd', '.vhdl', '.vue', '.sv', '.svelte',
@@ -205,7 +206,7 @@ function createUpstreamError(response, context) {
   }
 
   if (response.status === 403 || response.status === 429) {
-    return new HttpError(503, 'GITHUB_RATE_LIMITED', 'GitHub refused the request or its unauthenticated API rate limit was reached.');
+    return new HttpError(503, 'GITHUB_RATE_LIMITED', 'GitHub refused the request or the unauthenticated API rate limit was reached. Configure GITHUB_TOKEN on the backend for higher rate limits.');
   }
 
   return new HttpError(502, 'GITHUB_UPSTREAM_ERROR', `GitHub could not provide the requested ${context}.`);
@@ -248,23 +249,30 @@ async function readResponseBytes(response, maximumBytes) {
   return Buffer.concat(chunks, totalBytes);
 }
 
-async function fetchGitHubJson(url, { fetchImpl, limits, context }) {
+async function fetchGitHubJson(url, { fetchImpl, limits, context, signal }) {
   const controller = new AbortController();
+  const combined = combineAbortSignals(controller.signal, signal);
   const timeout = setTimeout(() => controller.abort(), limits.requestTimeoutMs);
+  const token = process.env.GITHUB_TOKEN?.trim();
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'DocGuard-AI',
+    'X-GitHub-Api-Version': '2022-11-28',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
 
   try {
     let response;
     try {
       response = await fetchImpl(url, {
-        headers: {
-          Accept: 'application/vnd.github+json',
-          'User-Agent': 'DocGuard-AI',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
+        headers,
         redirect: 'error',
-        signal: controller.signal,
+        signal: combined.signal,
       });
     } catch {
+      if (signal?.aborted) {
+        throw new HttpError(504, 'ANALYSIS_TIMEOUT', 'Repository analysis exceeded its configured time limit.');
+      }
       if (controller.signal.aborted) {
         throw new HttpError(504, 'GITHUB_REQUEST_TIMEOUT', 'The request to GitHub timed out.');
       }
@@ -283,6 +291,9 @@ async function fetchGitHubJson(url, { fetchImpl, limits, context }) {
       if (error instanceof HttpError) {
         throw error;
       }
+      if (signal?.aborted) {
+        throw new HttpError(504, 'ANALYSIS_TIMEOUT', 'Repository analysis exceeded its configured time limit.');
+      }
       if (controller.signal.aborted) {
         throw new HttpError(504, 'GITHUB_REQUEST_TIMEOUT', 'The request to GitHub timed out.');
       }
@@ -296,6 +307,7 @@ async function fetchGitHubJson(url, { fetchImpl, limits, context }) {
     }
   } finally {
     clearTimeout(timeout);
+    combined.dispose();
   }
 }
 
@@ -503,6 +515,7 @@ export async function ingestGitHubRepository(input, {
   fetchImpl = globalThis.fetch,
   limits = getLimits(),
   documentationOnly = false,
+  signal,
 } = {}) {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) {
     throw new HttpError(400, 'INVALID_REQUEST', 'Request body must be a JSON object.');
@@ -521,6 +534,7 @@ export async function ingestGitHubRepository(input, {
     fetchImpl,
     limits,
     context: 'repository',
+    signal,
   });
   if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) {
     throw new HttpError(502, 'INVALID_GITHUB_REPOSITORY', 'GitHub returned invalid repository metadata.');
@@ -540,7 +554,7 @@ export async function ingestGitHubRepository(input, {
 
   const commit = await fetchGitHubJson(
     `${apiBase}/commits/${encodeURIComponent(ref)}`,
-    { fetchImpl, limits, context: 'repository ref' },
+    { fetchImpl, limits, context: 'repository ref', signal },
   );
   if (commit === null || typeof commit !== 'object' || Array.isArray(commit)) {
     throw new HttpError(502, 'INVALID_GITHUB_COMMIT', 'GitHub returned invalid commit metadata.');
@@ -558,6 +572,7 @@ export async function ingestGitHubRepository(input, {
     fetchImpl,
     limits,
     context: 'repository tree',
+    signal,
   });
   const selectedTree = documentationOnly && Array.isArray(tree?.tree)
     ? {
@@ -599,6 +614,7 @@ export async function ingestGitHubRepository(input, {
       fetchImpl,
       limits,
       context,
+      signal,
     });
     const bytes = decodeBlobBytes(blob, entry.size, entry.path, entry.sha);
     repositoryBlobBytes.set(blobSha, bytes);

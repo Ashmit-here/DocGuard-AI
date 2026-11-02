@@ -4,6 +4,30 @@ import { WorkflowContext } from "./workflow-context";
 const STORAGE_KEY = "docguard-workflow";
 const EMPTY_WORKFLOW = { projects: [], pullRequests: [] };
 
+function migrateProjectAnalysis(project) {
+  const analysis = project?.analysis;
+  if (!analysis || analysis.verification === "unverified-model-output") return project;
+
+  const existingSuggestions = Array.isArray(analysis.suggestions) ? analysis.suggestions : [];
+  const legacyFindings = Array.isArray(analysis.findings) ? analysis.findings : [];
+  return {
+    ...project,
+    analysis: {
+      ...analysis,
+      findings: [],
+      suggestions: [
+        ...existingSuggestions,
+        ...legacyFindings.map((finding) => ({
+          ...finding,
+          verification: "unverified-model-suggestion"
+        }))
+      ],
+      verification: "unverified-model-output",
+      evidenceValidated: false
+    }
+  };
+}
+
 function readWorkflow() {
   try {
     const stored = sessionStorage.getItem(STORAGE_KEY);
@@ -12,7 +36,11 @@ function readWorkflow() {
     if (!parsed || !Array.isArray(parsed.projects) || !Array.isArray(parsed.pullRequests)) {
       throw new Error("Saved workflow data has an unexpected format.");
     }
-    return { ...parsed, warning: "" };
+    return {
+      ...parsed,
+      projects: parsed.projects.map(migrateProjectAnalysis),
+      warning: ""
+    };
   } catch (error) {
     console.error("Unable to read saved DocGuard workflow data:", error);
     return {

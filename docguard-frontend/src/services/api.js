@@ -2,7 +2,7 @@ import axios from "axios";
 
 export function getApiBaseUrl(environment = import.meta.env ?? {}) {
   const configuredApiUrl = environment.VITE_API_URL?.trim();
-  return (configuredApiUrl || "http://localhost:3000/api").replace(/\/+$/, "");
+  return (configuredApiUrl || "/api").replace(/\/+$/, "");
 }
 
 export const API_BASE_URL = getApiBaseUrl();
@@ -41,7 +41,9 @@ export async function uploadPdfDocuments(files) {
 
 export async function analyzeProject(projectId) {
   const response = await api.post(
-    `/projects/${encodeURIComponent(projectId)}/analyze`
+    `/projects/${encodeURIComponent(projectId)}/analyze`,
+    undefined,
+    { timeout: 90_000 }
   );
 
   return response.data;
@@ -59,7 +61,7 @@ export async function analyzePullRequest(pullRequestUrl) {
   const response = await api.post(
     "/pull-requests/analyze",
     { pullRequestUrl },
-    { timeout: 900_000 }
+    { timeout: 90_000 }
   );
 
   return response.data;
@@ -76,7 +78,7 @@ export function getApiErrorMessage(error) {
   }
 
   if (error?.code === "ECONNABORTED") {
-    return "The request timed out. The analysis service may still be starting or unavailable.";
+    return "The request timed out. Analysis requests are limited to 90 seconds; check the backend and analysis service before retrying.";
   }
 
   if (error?.code === "ERR_NETWORK") {

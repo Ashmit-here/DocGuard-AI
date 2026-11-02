@@ -1,0 +1,40 @@
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            docguard-frontend/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix docguard-frontend
+
+      - name: Run backend tests
+        run: npm test
+
+      - name: Run frontend lint
+        run: npm run lint --prefix docguard-frontend
+
+      - name: Build frontend
+        run: npm run build --prefix docguard-frontend

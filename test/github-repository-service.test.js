@@ -175,6 +175,32 @@ test('ingests public repository files while preserving their paths and exact UTF
   ]);
 });
 
+test('recognizes HTML and CSS files as source in a GitHub repository', async () => {
+  const entries = [
+    createBlobEntry('index.html', '<main>Original UI</main>'),
+    createBlobEntry('styles.css', 'main { color: navy; }'),
+    createBlobEntry('README.md', '# Project guide'),
+  ];
+  const { fetchImpl } = createGitHubMock({
+    tree: { tree: entries, truncated: false },
+  });
+
+  const result = await ingestGitHubRepository(
+    { repositoryUrl: 'https://github.com/example/project' },
+    { fetchImpl },
+  );
+
+  assert.deepEqual(result.project.files.map(({ path, category }) => ({ path, category })), [
+    { path: 'index.html', category: 'source' },
+    { path: 'styles.css', category: 'source' },
+    { path: 'README.md', category: 'documentation' },
+  ]);
+  assert.deepEqual(result.analyserInput.sourceFiles.map(({ path, content }) => ({ path, content })), [
+    { path: 'index.html', content: '<main>Original UI</main>' },
+    { path: 'styles.css', content: 'main { color: navy; }' },
+  ]);
+});
+
 test('uses an explicitly requested ref without changing its value', async () => {
   const { calls, fetchImpl } = createGitHubMock();
   await ingestGitHubRepository(
@@ -778,7 +804,9 @@ test('maps GitHub API failures to safe HTTP errors', async () => {
         { repositoryUrl: 'https://github.com/example/project' },
         { fetchImpl },
       ),
-      (error) => error.code === expectedCode && !error.message.includes('private upstream details'),
+      (error) => error.code === expectedCode
+        && !error.message.includes('private upstream details')
+        && (expectedCode !== 'GITHUB_RATE_LIMITED' || error.message.includes('GITHUB_TOKEN')),
     );
   }
 });
@@ -818,4 +846,78 @@ test('rejects oversized GitHub API responses', async () => {
     ),
     (error) => error.code === 'GITHUB_RESPONSE_TOO_LARGE',
   );
+});
+
+test('omits Authorization when GITHUB_TOKEN is not configured', async () => {
+  const originalToken = process.env.GITHUB_TOKEN;
+  delete process.env.GITHUB_TOKEN;
+  try {
+    const { calls, fetchImpl } = createGitHubMock();
+    await ingestGitHubRepository(
+      { repositoryUrl: 'https://github.com/example/project' },
+      { fetchImpl },
+    );
+
+    assert.equal(calls.every(({ options }) => (
+      options.headers.Authorization === undefined
+    )), true);
+  } finally {
+    if (originalToken === undefined) {
+      delete process.env.GITHUB_TOKEN;
+    } else {
+      process.env.GITHUB_TOKEN = originalToken;
+    }
+  }
+});
+
+test('includes the configured Bearer token on repository API requests', async () => {
+  const testToken = 'test-token-repo-secret-12345';
+  const originalToken = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = testToken;
+  try {
+    const { calls, fetchImpl } = createGitHubMock();
+    const result = await ingestGitHubRepository(
+      { repositoryUrl: 'https://github.com/example/project' },
+      { fetchImpl },
+    );
+
+    assert.ok(calls.length > 0);
+    assert.equal(calls.every(({ options }) => (
+      options.headers.Authorization === `Bearer ${testToken}`
+    )), true);
+    assert.equal(JSON.stringify(result).includes(testToken), false);
+  } finally {
+    if (originalToken === undefined) {
+      delete process.env.GITHUB_TOKEN;
+    } else {
+      process.env.GITHUB_TOKEN = originalToken;
+    }
+  }
+});
+
+test('does not expose configured token in errors or logs during repository ingestion', async () => {
+  const testToken = 'test-token-repo-secret-67890';
+  const originalToken = process.env.GITHUB_TOKEN;
+  process.env.GITHUB_TOKEN = testToken;
+  try {
+    const { fetchImpl } = createGitHubMock({
+      overrides: {
+        '/repos/example/project': async () => jsonResponse({ message: 'rate limit exceeded' }, 403),
+      },
+    });
+
+    await assert.rejects(
+      ingestGitHubRepository(
+        { repositoryUrl: 'https://github.com/example/project' },
+        { fetchImpl },
+      ),
+      (error) => !error.message.includes(testToken) && !JSON.stringify(error).includes(testToken),
+    );
+  } finally {
+    if (originalToken === undefined) {
+      delete process.env.GITHUB_TOKEN;
+    } else {
+      process.env.GITHUB_TOKEN = originalToken;
+    }
+  }
 });
