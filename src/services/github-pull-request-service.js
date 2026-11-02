@@ -7,6 +7,7 @@ import {
   parseGitHubRepositoryUrl,
   validateGitHubRef,
 } from '../utils/github-repository-url.js';
+import { combineAbortSignals } from '../utils/combine-abort-signals.js';
 
 const DEFAULT_LIMITS = {
   maxFiles: 100,
@@ -59,7 +60,7 @@ function createUpstreamError(response, context) {
     return new HttpError(404, 'GITHUB_PULL_REQUEST_NOT_FOUND', `${context} was not found or is not public.`);
   }
   if (response.status === 403 || response.status === 429) {
-    return new HttpError(503, 'GITHUB_RATE_LIMITED', 'GitHub refused the request or its unauthenticated API rate limit was reached.');
+    return new HttpError(503, 'GITHUB_RATE_LIMITED', 'GitHub refused the request or the unauthenticated API rate limit was reached. Configure GITHUB_TOKEN on the backend for higher rate limits.');
   }
   return new HttpError(502, 'GITHUB_UPSTREAM_ERROR', `GitHub could not provide the requested ${context}.`);
 }
@@ -96,8 +97,9 @@ async function readResponseBytes(response, maximumBytes) {
   return Buffer.concat(chunks, totalBytes);
 }
 
-async function fetchGitHubJson(url, { fetchImpl, limits, context }) {
+async function fetchGitHubJson(url, { fetchImpl, limits, context, signal }) {
   const controller = new AbortController();
+  const combined = combineAbortSignals(controller.signal, signal);
   const timeout = setTimeout(() => controller.abort(), limits.requestTimeoutMs);
   const token = process.env.GITHUB_TOKEN?.trim();
   const headers = {
@@ -112,9 +114,12 @@ async function fetchGitHubJson(url, { fetchImpl, limits, context }) {
       response = await fetchImpl(url, {
         headers,
         redirect: 'error',
-        signal: controller.signal,
+        signal: combined.signal,
       });
     } catch {
+      if (signal?.aborted) {
+        throw new HttpError(504, 'ANALYSIS_TIMEOUT', 'Pull Request analysis exceeded its configured time limit.');
+      }
       if (controller.signal.aborted) {
         throw new HttpError(504, 'GITHUB_REQUEST_TIMEOUT', 'The request to GitHub timed out.');
       }
@@ -133,6 +138,9 @@ async function fetchGitHubJson(url, { fetchImpl, limits, context }) {
       if (error instanceof HttpError) {
         throw error;
       }
+      if (signal?.aborted) {
+        throw new HttpError(504, 'ANALYSIS_TIMEOUT', 'Pull Request analysis exceeded its configured time limit.');
+      }
       if (controller.signal.aborted) {
         throw new HttpError(504, 'GITHUB_REQUEST_TIMEOUT', 'The request to GitHub timed out.');
       }
@@ -146,6 +154,7 @@ async function fetchGitHubJson(url, { fetchImpl, limits, context }) {
     }
   } finally {
     clearTimeout(timeout);
+    combined.dispose();
   }
 }
 
@@ -321,11 +330,11 @@ function createChangeRecord(file, limits, patchBytesUsed) {
   };
 }
 
-async function fetchPullRequestSourceFile(apiBase, filePath, ref, { fetchImpl, limits }) {
+async function fetchPullRequestSourceFile(apiBase, filePath, ref, { fetchImpl, limits, signal }) {
   const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
   const file = await fetchGitHubJson(
     `${apiBase}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`,
-    { fetchImpl, limits, context: 'Pull Request source file' },
+    { fetchImpl, limits, context: 'Pull Request source file', signal },
   );
   if (
     !isRecord(file)
@@ -379,6 +388,7 @@ export async function ingestGitHubPullRequest(input, {
   fetchImpl = globalThis.fetch,
   limits = getLimits(),
   includeSourceContents = false,
+  signal,
 } = {}) {
   if (!isRecord(input)) {
     throw new HttpError(400, 'INVALID_REQUEST', 'Request body must be a JSON object.');
@@ -387,7 +397,7 @@ export async function ingestGitHubPullRequest(input, {
   const apiBase = `https://api.github.com/repos/${parsedUrl.owner}/${parsedUrl.repository}`;
   const metadataResponse = await fetchGitHubJson(
     `${apiBase}/pulls/${parsedUrl.number}`,
-    { fetchImpl, limits, context: 'Pull Request' },
+    { fetchImpl, limits, context: 'Pull Request', signal },
   );
   const pullRequest = validatePullRequestMetadata(metadataResponse, parsedUrl);
   const headRepository = pullRequest.head.repositoryUrl
@@ -410,6 +420,7 @@ export async function ingestGitHubPullRequest(input, {
       fetchImpl,
       limits,
       context: 'Pull Request changed files',
+      signal,
     });
     const pageFiles = validateChangedFiles(pageResponse);
     for (const file of pageFiles) {
@@ -499,12 +510,14 @@ export async function ingestGitHubPullRequest(input, {
           : fetchPullRequestSourceFile(apiBase, originalPath, pullRequest.base.commitSha, {
             fetchImpl,
             limits,
+            signal,
           }),
         change.status === 'removed'
           ? ''
           : fetchPullRequestSourceFile(headApiBase, change.path, pullRequest.head.commitSha, {
             fetchImpl,
             limits,
+            signal,
           }),
       ]);
       return {

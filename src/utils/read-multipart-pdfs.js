@@ -4,6 +4,7 @@ import { HttpError } from './http-error.js';
 const DEFAULT_UPLOAD_LIMITS = {
   maxFiles: 5,
   maxRequestBytes: 20 * 1024 * 1024,
+  maxTotalFileBytes: 15 * 1024 * 1024,
 };
 
 function readLimit(environmentName, defaultValue) {
@@ -23,6 +24,10 @@ export function getPdfUploadLimits() {
   return {
     maxFiles: readLimit('PDF_MAX_UPLOAD_FILES', DEFAULT_UPLOAD_LIMITS.maxFiles),
     maxRequestBytes: readLimit('PDF_MAX_REQUEST_BYTES', DEFAULT_UPLOAD_LIMITS.maxRequestBytes),
+    maxTotalFileBytes: readLimit(
+      'PDF_MAX_AGGREGATE_FILE_BYTES',
+      DEFAULT_UPLOAD_LIMITS.maxTotalFileBytes,
+    ),
   };
 }
 
@@ -39,6 +44,7 @@ function validateFilename(filename) {
 export function readMultipartPdfs(request, {
   maxFiles = getPdfUploadLimits().maxFiles,
   maxRequestBytes = getPdfUploadLimits().maxRequestBytes,
+  maxTotalFileBytes = getPdfUploadLimits().maxTotalFileBytes,
   maxFileBytes,
 } = {}) {
   const contentType = request.headers['content-type'] ?? '';
@@ -60,7 +66,7 @@ export function readMultipartPdfs(request, {
       preservePath: true,
       limits: {
         files: maxFiles,
-        fileSize: maxFileBytes,
+        fileSize: maxFileBytes + 1,
         fields: 0,
         parts: maxFiles,
       },
@@ -75,7 +81,9 @@ export function readMultipartPdfs(request, {
     const names = new Set();
     let firstError;
     let totalBytes = 0;
+    let totalFileBytes = 0;
     let requestTooLarge = false;
+    let aggregateFileTooLarge = false;
 
     function setError(error) {
       firstError ??= error;
@@ -122,7 +130,19 @@ export function readMultipartPdfs(request, {
         record.accepted = false;
       });
       stream.on('data', (chunk) => {
-        if (!record.accepted || requestTooLarge) {
+        if (record.accepted && !aggregateFileTooLarge) {
+          totalFileBytes += chunk.length;
+          if (totalFileBytes > maxTotalFileBytes) {
+            aggregateFileTooLarge = true;
+            setError(new HttpError(
+              413,
+              'PDF_AGGREGATE_FILE_SIZE_EXCEEDED',
+              `Uploaded PDF files exceed the configured ${maxTotalFileBytes}-byte combined file-size limit.`,
+            ));
+            for (const uploadedRecord of records) uploadedRecord.chunks.length = 0;
+          }
+        }
+        if (!record.accepted || requestTooLarge || aggregateFileTooLarge) {
           return;
         }
         record.size += chunk.length;

@@ -96,6 +96,24 @@ test('allows Vite development origins and answers CORS preflight requests', asyn
   assert.match(response.headers['access-control-allow-headers'], /Content-Type/i);
 });
 
+test('allows loopback development origins when Vite selects another local port', async (testContext) => {
+  const port = await startTestServer(testContext);
+  const origin = 'http://127.0.0.1:5180';
+  const response = await sendRequest(port, '/api/health', { headers: { Origin: origin } });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers['access-control-allow-origin'], origin);
+});
+
+test('allows same-origin production API requests without a CORS allowlist', async (testContext) => {
+  const port = await startTestServer(testContext, { corsOrigins: [] });
+  const origin = `http://127.0.0.1:${port}`;
+  const response = await sendRequest(port, '/api/health', { headers: { Origin: origin } });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers['access-control-allow-origin'], origin);
+});
+
 test('rejects origins not explicitly allowed by the local CORS policy', async (testContext) => {
   const port = await startTestServer(testContext, {
     corsOrigins: ['http://localhost:5173'],
@@ -239,11 +257,28 @@ test('project endpoint rejects oversized request bodies', async (testContext) =>
   const response = await sendRequest(port, '/api/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: ' '.repeat(10 * 1024 * 1024 + 1),
+    body: ' '.repeat(20 * 1024 * 1024 + 1),
   });
 
   assert.equal(response.statusCode, 413);
   assert.equal(response.body.error.code, 'REQUEST_TOO_LARGE');
+  assert.match(response.body.error.message, /configured 20971520-byte limit/);
+});
+
+test('project endpoint returns a structured error for an oversized individual file', async (testContext) => {
+  const port = await startTestServer(testContext);
+  const response = await sendJsonRequest(port, '/api/projects', {
+    project: {
+      name: 'oversized',
+      files: [{ path: 'src/large.js', content: 'x'.repeat(5 * 1024 * 1024 + 1) }],
+    },
+  });
+
+  assert.equal(response.statusCode, 413);
+  assert.deepEqual(response.body.error, {
+    code: 'PROJECT_FILE_TOO_LARGE',
+    message: 'File "src/large.js" exceeds the 5242880-byte project file limit.',
+  });
 });
 
 test('POST /api/projects/from-github returns the ingested project', async (testContext) => {
@@ -394,7 +429,23 @@ test('POST /api/projects/:projectId/analyze analyzes a stored project without re
       receivedProject = project;
       return {
         model: 'mock-model',
-        analysis: { summary: 'No drift found.', findings: [] },
+        analysis: {
+          summary: 'A possible timeout mismatch was found.',
+          findings: [{
+            severity: 'medium',
+            title: 'Possible stale timeout',
+            explanation: 'The source and documentation may differ.',
+            sourceReferences: [
+              { path: 'src/app.js', startLine: 1, endLine: 1 },
+              { path: 'src/missing.js', startLine: 1, endLine: 1 },
+            ],
+            documentationReferences: [
+              { path: 'docs/README.md', quote: '# Sample docs' },
+              { path: 'docs/README.md', quote: 'made-up sentence' },
+            ],
+            recommendation: 'Review the documentation.',
+          }],
+        },
       };
     },
   });
@@ -416,7 +467,21 @@ test('POST /api/projects/:projectId/analyze analyzes a stored project without re
   assert.equal(analysisResponse.statusCode, 200);
   assert.deepEqual(analysisResponse.body, {
     projectId,
-    analysis: { summary: 'No drift found.', findings: [] },
+    analysis: {
+      summary: 'A possible timeout mismatch was found.',
+      findings: [],
+      suggestions: [{
+        severity: 'medium',
+        title: 'Possible stale timeout',
+        explanation: 'The source and documentation may differ.',
+        sourceReferences: [{ path: 'src/app.js', startLine: 1, endLine: 1 }],
+        documentationReferences: [{ path: 'docs/README.md', quote: '# Sample docs' }],
+        recommendation: 'Review the documentation.',
+        verification: 'unverified-model-suggestion',
+      }],
+      verification: 'unverified-model-output',
+      evidenceValidated: true,
+    },
   });
   assert.deepEqual(receivedProject.project.sourceFiles, [{
     path: 'src/app.js',

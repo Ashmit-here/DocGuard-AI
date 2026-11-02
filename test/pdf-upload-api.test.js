@@ -65,6 +65,7 @@ function createUploadOptions({
   maxAggregateTextCharacters,
   maxFiles,
   maxRequestBytes,
+  maxTotalFileBytes,
 } = {}) {
   const limits = {
     ...getPdfLimits(),
@@ -76,10 +77,16 @@ function createUploadOptions({
     ...getPdfUploadLimits(),
     ...(maxFiles ? { maxFiles } : {}),
     ...(maxRequestBytes ? { maxRequestBytes } : {}),
+    ...(maxTotalFileBytes ? { maxTotalFileBytes } : {}),
   };
   return {
     processPdfUpload: (request) => uploadPdfDocuments(request, { limits, uploadLimits }),
   };
+}
+
+function padPdfToSize(bytes, targetSize) {
+  assert.ok(targetSize >= bytes.length);
+  return Buffer.concat([bytes, Buffer.alloc(targetSize - bytes.length, 0x20)]);
 }
 
 async function postDocuments(port, files) {
@@ -175,6 +182,67 @@ test('rejects oversized uploads and page counts with structured errors', async (
   }]);
   assert.equal(tooManyPages.statusCode, 413);
   assert.equal(JSON.parse(tooManyPages.body.toString('utf8')).error.code, 'PDF_PAGE_LIMIT_EXCEEDED');
+});
+
+test('enforces individual PDF byte limits below, at, and above the boundary', async (testContext) => {
+  const basePdf = createPdf(['Boundary']);
+  const limit = basePdf.length + 1;
+  for (const [size, expectedStatus] of [
+    [limit - 1, 201],
+    [limit, 201],
+    [limit + 1, 413],
+  ]) {
+    const port = await startTestServer(testContext, createUploadOptions({
+      maxFileBytes: limit,
+      maxRequestBytes: 1024 * 1024,
+      maxTotalFileBytes: 1024 * 1024,
+    }));
+    const response = await postDocuments(port, [{
+      filename: 'boundary.pdf',
+      bytes: padPdfToSize(basePdf, size),
+    }]);
+    assert.equal(
+      response.statusCode,
+      expectedStatus,
+      `unexpected status for ${size} bytes: ${response.body.toString('utf8')}`,
+    );
+    if (expectedStatus === 413) {
+      assert.equal(JSON.parse(response.body.toString('utf8')).error.code, 'PDF_FILE_TOO_LARGE');
+    }
+  }
+});
+
+test('enforces the combined raw PDF size below, at, and above the aggregate boundary', async (testContext) => {
+  const pdf = createPdf(['Boundary']);
+  const exactTotal = pdf.length * 2;
+  const cases = [
+    { maxTotalFileBytes: exactTotal + 1, secondPdf: pdf, status: 201 },
+    { maxTotalFileBytes: exactTotal, secondPdf: pdf, status: 201 },
+    {
+      maxTotalFileBytes: exactTotal - 1,
+      secondPdf: padPdfToSize(pdf, pdf.length + 1),
+      status: 413,
+    },
+  ];
+
+  for (const { maxTotalFileBytes, secondPdf, status } of cases) {
+    const port = await startTestServer(testContext, createUploadOptions({
+      maxFileBytes: exactTotal + 10,
+      maxRequestBytes: 1024 * 1024,
+      maxTotalFileBytes,
+    }));
+    const response = await postDocuments(port, [
+      { filename: 'one.pdf', bytes: pdf },
+      { filename: 'two.pdf', bytes: secondPdf },
+    ]);
+    assert.equal(response.statusCode, status);
+    if (status === 413) {
+      assert.deepEqual(JSON.parse(response.body.toString('utf8')).error, {
+        code: 'PDF_AGGREGATE_FILE_SIZE_EXCEEDED',
+        message: `Uploaded PDF files exceed the configured ${maxTotalFileBytes}-byte combined file-size limit.`,
+      });
+    }
+  }
 });
 
 test('enforces total request size and upload-count limits', async (testContext) => {

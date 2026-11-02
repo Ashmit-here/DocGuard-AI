@@ -13,9 +13,10 @@ function getPathReferences(references) {
 }
 
 const DocumentationIssues = () => {
-  const { projects } = useWorkflow();
+  const { projects, pullRequests } = useWorkflow();
   const [search, setSearch] = useState("");
   const [severity, setSeverity] = useState("All");
+  const [view, setView] = useState(null);
 
   const findings = projects.flatMap((project) => (
     Array.isArray(project.analysis?.findings)
@@ -26,9 +27,63 @@ const DocumentationIssues = () => {
         projectId: project.projectId
       }))
       : []
-  ));
+  )).concat(pullRequests.flatMap((item, requestIndex) => (
+    Array.isArray(item.driftAnalysis?.findings)
+      ? item.driftAnalysis.findings.map((finding, index) => ({
+        ...finding,
+        id: `pr-${requestIndex}-${finding.id ?? index}`,
+        title: finding.title ?? finding.reason ?? "Verified documentation drift",
+        explanation: finding.reason ?? finding.sentence ?? "A deterministic rule matched the documentation to a changed source value.",
+        severity: finding.severity ?? "info",
+        sourceReferences: finding.codeEvidence?.file
+          ? [{ path: finding.codeEvidence.file, ...(Number.isSafeInteger(finding.codeEvidence.line) ? { startLine: finding.codeEvidence.line } : {}) }]
+          : [],
+        documentationReferences: finding.documentation?.file
+          ? [{
+            path: finding.documentation.file,
+            ...(Number.isSafeInteger(finding.documentation.pageNumber) ? { pageNumber: finding.documentation.pageNumber } : {}),
+            ...(typeof finding.documentation.sentence === "string" ? { quote: finding.documentation.sentence } : {})
+          }]
+          : [],
+        repository: item.source?.repositoryUrl ?? "Pull request"
+      }))
+      : []
+  )));
+  const suggestions = projects.flatMap((project) => (
+    Array.isArray(project.analysis?.suggestions)
+      ? project.analysis.suggestions.map((suggestion, index) => ({
+        ...suggestion,
+        id: `${project.projectId}-suggestion-${index}`,
+        repository: project.repositoryName ?? project.source?.repositoryUrl ?? "Project",
+        projectId: project.projectId
+      }))
+      : []
+  )).concat(pullRequests.flatMap((item, requestIndex) => (
+    Array.isArray(item.driftAnalysis?.suggestions)
+      ? item.driftAnalysis.suggestions.map((suggestion, index) => ({
+        ...suggestion,
+        id: `pr-suggestion-${requestIndex}-${suggestion.id ?? index}`,
+        title: suggestion.title ?? suggestion.reason ?? "Unverified model suggestion",
+        explanation: suggestion.reason ?? suggestion.sentence ?? "The model suggested a possible documentation mismatch.",
+        severity: suggestion.severity ?? "info",
+        sourceReferences: suggestion.codeEvidence?.file
+          ? [{ path: suggestion.codeEvidence.file, ...(Number.isSafeInteger(suggestion.codeEvidence.line) ? { startLine: suggestion.codeEvidence.line } : {}) }]
+          : [],
+        documentationReferences: suggestion.documentation?.file
+          ? [{
+            path: suggestion.documentation.file,
+            ...(Number.isSafeInteger(suggestion.documentation.pageNumber) ? { pageNumber: suggestion.documentation.pageNumber } : {}),
+            ...(typeof suggestion.documentation.sentence === "string" ? { quote: suggestion.documentation.sentence } : {})
+          }]
+          : [],
+        repository: item.source?.repositoryUrl ?? "Pull request"
+      }))
+      : []
+  )));
+  const activeView = view ?? (findings.length === 0 && suggestions.length > 0 ? "suggestions" : "findings");
+  const entries = activeView === "suggestions" ? suggestions : findings;
   const query = search.toLowerCase();
-  const visible = findings.filter((finding) => {
+  const visible = entries.filter((finding) => {
     const sourcePaths = getPathReferences(finding.sourceReferences).map((reference) => reference.path);
     const documentationPaths = getPathReferences(finding.documentationReferences).map((reference) => reference.path);
     const searchable = [
@@ -47,17 +102,42 @@ const DocumentationIssues = () => {
     <div className="page">
       <header className="page-head">
         <div>
-          <h1>Documentation findings</h1>
-          <p>Findings returned by the backend analyses in this browser session.</p>
+          <h1>Verified documentation findings</h1>
+          <p>Deterministic findings and model suggestions are kept separate.</p>
         </div>
       </header>
+
+      <div className="results-toolbar" role="tablist" aria-label="Result verification type">
+        <button
+          role="tab"
+          aria-selected={activeView === "findings"}
+          className={`chip ${activeView === "findings" ? "on" : ""}`}
+          onClick={() => setView("findings")}
+        >
+          Verified findings <span>{findings.length}</span>
+        </button>
+        <button
+          role="tab"
+          aria-selected={activeView === "suggestions"}
+          className={`chip ${activeView === "suggestions" ? "on" : ""}`}
+          onClick={() => setView("suggestions")}
+        >
+          AI suggestions <span>{suggestions.length}</span>
+        </button>
+      </div>
+
+      {activeView === "suggestions" && suggestions.length > 0 && (
+        <p className="unverified-note" role="note">
+          Model suggestions are unverified candidates. Matching file references do not prove the model’s interpretation.
+        </p>
+      )}
 
       <div className="issues-toolbar">
         <label className="input">
           <Search size={16} />
           <input
-            placeholder="Search repository, file or finding"
-            aria-label="Search findings"
+            placeholder={`Search repository, file or ${activeView === "suggestions" ? "suggestion" : "finding"}`}
+            aria-label={`Search ${activeView === "suggestions" ? "suggestions" : "findings"}`}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
@@ -74,15 +154,21 @@ const DocumentationIssues = () => {
       </div>
 
       <p className="muted issues-count" role="status">
-        {visible.length} {visible.length === 1 ? "finding" : "findings"}
+        {visible.length} {activeView === "suggestions"
+          ? visible.length === 1 ? "suggestion" : "suggestions"
+          : visible.length === 1 ? "finding" : "findings"}
       </p>
 
       {visible.length === 0 ? (
         <div className="empty">
-          <strong>{findings.length ? "No findings match these filters" : "No backend findings are available"}</strong>
-          {findings.length
-            ? "Clear the search or choose “All severities” to see other findings."
-            : "Connect and analyze a repository to see real results here."}
+          <strong>{entries.length
+            ? `No ${activeView === "suggestions" ? "suggestions" : "findings"} match these filters`
+            : activeView === "suggestions" ? "No AI suggestions are available" : "No verified findings are available"}</strong>
+          {entries.length
+            ? `Clear the search or choose “All severities” to see other ${activeView === "suggestions" ? "suggestions" : "findings"}.`
+            : activeView === "suggestions"
+              ? "Repository analysis suggestions appear here after a check completes."
+              : "Verified pull request findings appear here after a pull request check completes."}
         </div>
       ) : (
         <div className="table-wrap">
@@ -90,7 +176,7 @@ const DocumentationIssues = () => {
             <thead>
               <tr>
                 <th>Repository</th>
-                <th>Finding</th>
+                <th>{activeView === "suggestions" ? "Suggestion" : "Finding"}</th>
                 <th>Source references</th>
                 <th>Documentation references</th>
                 <th>Severity</th>
@@ -101,7 +187,8 @@ const DocumentationIssues = () => {
                 <tr key={finding.id}>
                   <td>{finding.repository}</td>
                   <td>
-                    <strong>{finding.title ?? "Untitled finding"}</strong>
+                    <strong>{finding.title ?? `Untitled ${activeView === "suggestions" ? "suggestion" : "finding"}`}</strong>
+                    {activeView === "suggestions" && <p className="muted">Unverified model suggestion</p>}
                     {typeof finding.explanation === "string" && <p>{finding.explanation}</p>}
                     {typeof finding.recommendation === "string" && finding.recommendation && (
                       <p className="muted"><strong>Recommendation:</strong> {finding.recommendation}</p>

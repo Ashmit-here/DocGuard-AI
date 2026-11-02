@@ -1,0 +1,34 @@
+{
+  "contract": "drift-engine/v1",
+  "findings": [
+    {
+      "id": "rule-1",
+      "outdated": true,
+      "documentation": {
+        "file": "README.md",
+        "line": 3,
+        "sentence": "The request timeout is 20 seconds."
+      },
+      "codeEvidence": {
+        "file": "src/config.js",
+        "line": 1,
+        "changeType": "added",
+        "text": "export const REQUEST_TIMEOUT_SECONDS = 30;"
+      },
+      "reason": "The documented timeout is 20 seconds, but REQUEST_TIMEOUT_SECONDS changed from 20 to 30 seconds.",
+      "verification": "deterministic-rule-match"
+    }
+  ],
+  "suggestions": [],
+  "diagnostics": {
+    "model": {
+      "status": "not-run-deterministic-only"
+    },
+    "counts": {
+      "changedLines": 2,
+      "modelFindingsReturned": 0,
+      "deterministicRuleMatches": 1,
+      "unverifiedSuggestions": 0
+    }
+  }
+}

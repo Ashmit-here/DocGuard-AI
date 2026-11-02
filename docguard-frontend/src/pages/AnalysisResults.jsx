@@ -33,8 +33,11 @@ const AnalysisResults = () => {
   const project = analyzedProjects.find((item) => item.projectId === projectId) ?? latestProject;
   const analysis = project?.analysis;
   const findings = Array.isArray(analysis?.findings) ? analysis.findings : [];
+  const suggestions = Array.isArray(analysis?.suggestions) ? analysis.suggestions : [];
+  const [view, setView] = useState(() => findings.length === 0 && suggestions.length > 0 ? "suggestions" : "findings");
+  const entries = view === "suggestions" ? suggestions : findings;
   const [filter, setFilter] = useState("All");
-  const visible = findings
+  const visible = entries
     .map((finding, index) => ({ ...finding, id: `${project?.projectId}-${index}` }))
     .filter((finding) => filter === "All"
       || String(finding.severity ?? "info").toLowerCase() === filter.toLowerCase());
@@ -43,8 +46,8 @@ const AnalysisResults = () => {
 
   const countFor = (value) => (
     value === "All"
-      ? findings.length
-      : findings.filter((finding) => (
+      ? entries.length
+      : entries.filter((finding) => (
         String(finding.severity ?? "info").toLowerCase() === value.toLowerCase()
       )).length
   );
@@ -95,6 +98,7 @@ const AnalysisResults = () => {
               setProjectId(event.target.value);
               setSelectedId("");
               setFilter("All");
+              setView("findings");
             }}
           >
             {analyzedProjects.map((item) => (
@@ -106,14 +110,22 @@ const AnalysisResults = () => {
         </label>
       )}
 
-      <dl className="summary">
+      <dl className="summary analysis-summary-stats">
         <div><dt>Source files</dt><dd>{project.summary?.sourceFiles ?? "—"}</dd></div>
         <div><dt>Documentation files</dt><dd>{project.summary?.documentationFiles ?? "—"}</dd></div>
-        <div><dt>Findings</dt><dd>{findings.length}</dd></div>
+        <div><dt>Verified findings</dt><dd>{findings.length}</dd></div>
+        <div><dt>AI suggestions</dt><dd>{suggestions.length}</dd></div>
       </dl>
 
       {typeof analysis.summary === "string" && (
-        <p className="analysis-summary">{analysis.summary}</p>
+        <p className="analysis-summary"><strong>AI summary:</strong> {analysis.summary}</p>
+      )}
+      {suggestions.length > 0 && (
+        <p className="unverified-note" role="note">
+          Repository snapshot results are model-generated suggestions, not confirmed drift. {analysis.evidenceValidated
+            ? "References shown here were matched to the supplied files and locations, but that does not verify the model’s interpretation."
+            : "References saved by an earlier version could not be checked against the original files."}
+        </p>
       )}
       {Array.isArray(project.warnings) && project.warnings.length > 0 && (
         <ul className="analysis-warnings">
@@ -124,6 +136,33 @@ const AnalysisResults = () => {
           ))}
         </ul>
       )}
+
+      <div className="result-categories" role="tablist" aria-label="Result verification type">
+        <button
+          role="tab"
+          aria-selected={view === "findings"}
+          className={view === "findings" ? "result-category active" : "result-category"}
+          onClick={() => {
+            setView("findings");
+            setSelectedId("");
+            setFilter("All");
+          }}
+        >
+          Verified findings <span>{findings.length}</span>
+        </button>
+        <button
+          role="tab"
+          aria-selected={view === "suggestions"}
+          className={view === "suggestions" ? "result-category active" : "result-category"}
+          onClick={() => {
+            setView("suggestions");
+            setSelectedId("");
+            setFilter("All");
+          }}
+        >
+          AI suggestions <span>{suggestions.length}</span>
+        </button>
+      </div>
 
       <div className="results-toolbar" role="tablist" aria-label="Filter by severity">
         {filters.map((value) => (
@@ -141,10 +180,16 @@ const AnalysisResults = () => {
 
       {visible.length === 0 ? (
         <div className="empty">
-          <strong>{findings.length === 0 ? "No findings returned" : `No ${filter.toLowerCase()} findings`}</strong>
-          {findings.length === 0
-            ? "The backend analyser found no reportable documentation inconsistencies."
-            : "Choose another severity to see the other findings."}
+          <strong>
+            {view === "suggestions"
+              ? suggestions.length === 0 ? "No model suggestions returned" : `No ${filter.toLowerCase()} suggestions`
+              : findings.length === 0 ? "No verified findings returned" : `No ${filter.toLowerCase()} findings`}
+          </strong>
+          {visible.length === 0 && (view === "suggestions" ? suggestions.length : findings.length) === 0
+            ? view === "suggestions"
+              ? "The model did not return any suggestions for this repository snapshot."
+              : "No deterministic drift findings are available for this repository snapshot."
+            : "Choose another severity to see the other results."}
         </div>
       ) : (
         <div className="results-content">

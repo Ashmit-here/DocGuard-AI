@@ -74,9 +74,11 @@ The React frontend connects to the backend for health checks, public GitHub
 repository ingestion, optional PDF uploads, and project analysis. Repository
 references and analysis results remain temporary and are kept in the current
 browser session. Pull Request analysis uses the deterministic drift engine
-alongside the configured Ollama model; repository snapshot analysis continues
-to use the validated project-analysis contract. The backend does not yet
-support ZIP upload or persistent project storage.
+alongside the configured Ollama model. Because a repository snapshot has no
+before-and-after source change, its Ollama output is returned as unverified
+suggestions; only the Pull Request workflow currently produces deterministic
+drift findings. The backend does not yet support ZIP upload or persistent
+project storage.
 
 ### Normalized project input
 
@@ -105,9 +107,17 @@ The response preserves each submitted path and content string and adds a
 `category`: recognized programming-language extensions are `source`,
 recognized documentation extensions and README files are `documentation`,
 and other extensions are `other`. Unsafe or duplicate paths and malformed
-projects receive a JSON error response. Request bodies are limited to 10 MiB.
+projects receive a JSON error response. Request bodies are limited to 20 MiB
+by default.
 Project contents are processed in memory only; they are not saved to disk or
 sent to the AI analyser.
+
+JSON request bodies are capped by `JSON_MAX_REQUEST_BYTES` (20 MiB by
+default). Each project file is limited by `PROJECT_MAX_FILE_BYTES` (5 MiB),
+and all submitted file contents together are limited by
+`PROJECT_MAX_TOTAL_FILE_BYTES` (12 MiB). These content limits are separate
+from JSON encoding/request overhead. Prepared analyser input still has its
+own 15 MiB default limit and is rejected before an Ollama request if exceeded.
 
 ### Public GitHub repository input
 
@@ -208,14 +218,26 @@ Repository retrieval is bounded by these configurable environment variables:
 | `GITHUB_MAX_API_RESPONSE_BYTES` | 12 MiB | Maximum response size from GitHub |
 | `GITHUB_REQUEST_TIMEOUT_MS` | 10,000 | Timeout for each GitHub request |
 
+The local JSON project endpoint uses separate request and file-content limits:
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `JSON_MAX_REQUEST_BYTES` | 20 MiB | Maximum complete JSON request body |
+| `PROJECT_MAX_FILE_BYTES` | 5 MiB | Maximum UTF-8 content size of one submitted project file |
+| `PROJECT_MAX_TOTAL_FILE_BYTES` | 12 MiB | Maximum combined submitted project file content |
+
 GitHub unauthenticated API rate limits may also apply. No authentication
 credentials are configured or required for public repositories. Project
 contents are never written to disk. Project references are held temporarily
 in memory; only an explicit analysis request sends prepared text to the
 configured Ollama service.
 The structured `analyserInput` is the input to the Stage 5 Ollama adapter.
-The backend validates and transports its response; semantic analysis and
-drift detection are performed by the configured model, not backend code.
+The backend validates the model response and checks that referenced paths,
+source line numbers, PDF pages, and quoted documentation text exist in the
+submitted input. Repository-snapshot results remain unverified AI suggestions:
+matching a location does not prove that the model's semantic interpretation is
+correct. Deterministic findings are produced only by the Pull Request drift
+engine, which compares base and head source revisions.
 
 The recursive Git Trees REST endpoint is not paginated. If GitHub marks its
 tree response as truncated, ingestion fails explicitly with
@@ -317,8 +339,9 @@ as a complete source file. GitHub files without a patch are explicitly listed
 as skipped; they are not analyzed with fabricated diffs. The response follows
 `drift-engine/v1`: deterministic, evidence-backed findings appear in
 `findings`, while model-only output appears separately in `suggestions` with
-`unverified-model-suggestion` verification. The existing project-analysis
-endpoint and response contract are unchanged.
+`unverified-model-suggestion` verification. The repository project-analysis
+endpoint also separates model output into `suggestions`; its `findings` array
+is reserved for verified results and is currently empty for snapshot analysis.
 
 The PR analysis is bounded. It rejects requests exceeding the configured
 changed-source-file count or per-source-file byte limit. Repository docs are
@@ -413,6 +436,7 @@ PDF processing limits are configurable:
 | `PDF_MAX_UPLOAD_FILES` | 5 | Maximum PDFs in one upload |
 | `PDF_MAX_REQUEST_BYTES` | 20 MiB | Maximum multipart request size |
 | `PDF_MAX_FILE_BYTES` | 10 MiB | Maximum uploaded PDF size |
+| `PDF_MAX_AGGREGATE_FILE_BYTES` | 15 MiB | Maximum combined raw PDF file bytes per upload |
 | `PDF_MAX_PAGES` | 500 | Maximum pages per PDF |
 | `PDF_EXTRACTION_TIMEOUT_MS` | 10,000 | Maximum extraction duration |
 | `PDF_MAX_EXTRACTED_TEXT_CHARACTERS` | 2 Mi characters | Maximum extracted text per PDF |
@@ -460,7 +484,8 @@ The frontend response is:
   "projectId": "temporary-project-reference",
   "analysis": {
     "summary": "The documentation describes a previous default value.",
-    "findings": [
+    "findings": [],
+    "suggestions": [
       {
         "severity": "medium",
         "title": "Documented default differs from source",
@@ -471,24 +496,30 @@ The frontend response is:
         "documentationReferences": [
           { "path": "docs/guide.pdf", "pageNumber": 2, "quote": "timeout is 20" }
         ],
-        "recommendation": "Update the guide to describe the current timeout."
+        "recommendation": "Update the guide to describe the current timeout.",
+        "verification": "unverified-model-suggestion"
       }
-    ]
+    ],
+    "verification": "unverified-model-output",
+    "evidenceValidated": true
   }
 }
 ```
 
-The validated response contract requires a `summary` string and a `findings`
-array. Every finding must contain severity (`critical`, `high`, `medium`,
+Ollama must return a `summary` string and a `findings` array in the validated
+model schema. The API moves those model-generated claims into `suggestions`
+and returns an empty `findings` array for repository snapshots. It keeps only
+references whose paths and locations exist in the submitted files; quotes
+must match the extracted document text. This validates locations, not claims.
+Every model item must contain severity (`critical`, `high`, `medium`,
 `low`, or `info`), title, explanation, source references, documentation
 references, and recommendation. Reference records require a path and may
-include line ranges or a page number and quote. Empty findings are valid; the
-backend does not create, revise, or infer findings.
+include line ranges or a page number and quote. Empty model output is valid.
 
-Configure Ollama by copying `.env.example` and setting `OLLAMA_MODEL` to a
-model already available to your Ollama service. The application does not
-automatically load `.env` files; export the variables in the process
-environment before starting the server. `OLLAMA_BASE_URL` defaults to
+Use `.env.example` as a reference and set `OLLAMA_MODEL` to a model already
+available to your Ollama service. The application does not automatically load
+`.env` files; export the variables in the process environment before starting
+the server. `OLLAMA_BASE_URL` defaults to
 `http://127.0.0.1:11434`; it must be an HTTP(S) origin without credentials,
 path, query, or fragment. Only this administrator-configured URL is used for
 outbound requests, redirects are rejected, and no Ollama credentials are
@@ -504,14 +535,17 @@ npm start
 
 The project ID is a temporary bearer reference: anyone who obtains it can
 request analysis until it expires. This backend does not currently implement
-user authentication or project ownership checks. Keep the API on a trusted
-network and avoid exposing project IDs.
+user authentication or project ownership checks. It binds to loopback by
+default. If you expose it with `HOST`, place it behind authentication and
+network controls, and avoid exposing project IDs.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
+| `HOST` | `127.0.0.1` | Backend network interface to bind |
+| `PORT` | `3000` | Backend listening port |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Configured Ollama service origin |
 | `OLLAMA_MODEL` | (required) | Installed Ollama model name |
-| `OLLAMA_REQUEST_TIMEOUT_MS` | 120,000 | Maximum Ollama request duration |
+| `OLLAMA_REQUEST_TIMEOUT_MS` | 85,000 | Maximum Ollama request duration; capped at 85 seconds |
 | `OLLAMA_MAX_RESPONSE_BYTES` | 2 MiB | Maximum Ollama response body |
 | `ANALYSER_MAX_INPUT_BYTES` | 15 MiB | Maximum prepared analysis request |
 | `PROJECT_REFERENCE_MAX_COUNT` | 100 | Maximum active prepared projects |
@@ -524,10 +558,19 @@ structured API errors rather than successful-looking empty results. Tests
 mock Ollama; a passing test suite does not establish that a live Ollama
 service/model is available or that its findings are correct. Semantic result
 quality depends on the configured model and is not guaranteed by the backend.
+Frontend project and Pull Request analysis requests each have a 90,000 ms
+Axios timeout. The backend caps a single Ollama request and the full Pull
+Request analysis operation at 85,000 ms, leaving time for the backend to
+validate and return its response. These are maximum waits, not claims that
+analysis takes 90 seconds. GitHub requests retain their independent 10,000 ms
+per-request limits, and PDF extraction retains its independent 10,000 ms
+limit. The Node HTTP server's request-receive timeout remains its runtime
+default and does not set the analysis execution timeout.
 
 ## Requirements
 
-- Node.js 18 or later
+- Node.js 18 or later for the backend
+- Node.js 20.19+ or 22.12+ for the frontend (Vite 8)
 - npm
 
 The backend uses Busboy for bounded multipart request parsing and PDF.js for
@@ -538,7 +581,7 @@ extracts text and does not render PDF pages.
 ## Installation
 
 ```sh
-npm install
+npm ci
 ```
 
 ## Start the backend
@@ -547,11 +590,13 @@ npm install
 npm start
 ```
 
-The server listens on port `3000` by default. Set `PORT` to use another
-available port:
+The backend binds to `127.0.0.1:3000` by default so the unauthenticated API is
+not exposed to other machines on the network. Set `PORT` to use another
+available port. To expose it on a network, set `HOST` deliberately and place
+the API behind suitable authentication and network controls:
 
 ```sh
-PORT=4000 npm start
+HOST=0.0.0.0 PORT=4000 npm start
 ```
 
 ## Health check
@@ -571,19 +616,19 @@ Example response:
 
 ## Local frontend and backend development
 
-The backend listens on port `3000` by default. In one terminal, from the
+The backend listens on `127.0.0.1:3000` by default. In one terminal, from the
 repository root:
 
 ```sh
-npm install
+npm ci
 export OLLAMA_MODEL='your-installed-model'
 npm start
 ```
 
 Set `OLLAMA_MODEL` to a model already installed in your local Ollama service
 before requesting analysis. The backend does not load `.env` files
-automatically. To use a non-default backend port, set `PORT` and configure the
-frontend API URL to match.
+automatically. To use a non-default backend port, set `PORT` and point
+`DOCGUARD_API_PROXY_TARGET` at that backend when starting Vite.
 
 In a second terminal:
 
@@ -594,20 +639,22 @@ cp .env.example .env
 npm run dev
 ```
 
-The Vite development server uses port `5173` by default. The example frontend
-configuration points to `http://localhost:3000/api`; set `VITE_API_URL` in
-`docguard-frontend/.env` if the backend is listening elsewhere. Local backend
-CORS permits only `http://localhost:5173` and `http://127.0.0.1:5173` by
-default. In production, configure an explicit comma-separated
-`CORS_ALLOWED_ORIGINS` allowlist; no production origins are allowed by default.
+The Vite development server uses port `5173` by default and proxies `/api` to
+`http://127.0.0.1:3000`. The frontend defaults to the same-origin `/api` path,
+which also works behind a production reverse proxy. For a separately hosted
+production API, set `VITE_API_URL` at build time and add the frontend origin to
+the backend's comma-separated `CORS_ALLOWED_ORIGINS` allowlist. Same-origin
+requests are allowed without that setting; other production origins are
+denied by default. Local development accepts HTTP loopback origins on Vite's
+selected port.
 
 In the UI, open **Repositories**, submit a public GitHub repository URL, and
 optionally select one or more PDFs. The frontend uploads PDFs first, attaches
 their returned references to repository ingestion, then analyzes the returned
 `projectId`. Results and repository metadata are kept in the current browser
-session. The **Pull request changes** page only fetches PR metadata and changed
-files; full PR-specific documentation analysis is not implemented by the
-backend.
+session. The **Pull request changes** page fetches the PR metadata, changed
+files, exact source revisions and documentation, then displays verified
+deterministic findings separately from unverified model suggestions.
 
 Frontend checks:
 
@@ -624,6 +671,70 @@ npm test
 ```
 
 The project uses Node.js's built-in test runner.
+
+## Reproducible deterministic drift example
+
+The local example demonstrates a configuration change from a 20-second
+timeout to a 30-second timeout while the README still documents 20 seconds.
+It uses the existing drift engine's deterministic analysis path, needs no
+GitHub access or Ollama server, and does not change the frontend/backend API.
+The result is produced by the engine; it is not an illustrative or
+AI-generated finding.
+
+Example files:
+
+```text
+examples/timeout-drift/
+├── before/src/config.js       # Previous 20-second value
+├── after/src/config.js        # Updated 30-second value
+├── README.md                  # Stale timeout statement and an unrelated claim
+├── docs/operations.md         # Unchanged documentation
+├── changes.diff               # Exact source change supplied to the engine
+├── expected-output.json       # Deterministic result contract
+└── run.mjs                    # Local example runner
+```
+
+From the repository root, run:
+
+```sh
+node examples/timeout-drift/run.mjs
+node --test test/timeout-drift-example.test.js
+```
+
+The runner prints the actual engine result and fails if it differs from
+`expected-output.json`. The test also checks the finding's README sentence,
+source path and changed line, and confirms unrelated documentation is not
+reported. Representative output:
+
+```json
+{
+  "findings": [
+    {
+      "outdated": true,
+      "documentation": {
+        "file": "README.md",
+        "line": 3,
+        "sentence": "The request timeout is 20 seconds."
+      },
+      "codeEvidence": {
+        "file": "src/config.js",
+        "line": 1,
+        "changeType": "added",
+        "text": "export const REQUEST_TIMEOUT_SECONDS = 30;"
+      },
+      "verification": "deterministic-rule-match"
+    }
+  ],
+  "suggestions": []
+}
+```
+
+The deterministic timeout rule is intentionally narrow: it checks changed
+numeric assignments whose identifier includes `TIMEOUT` and ends in
+`_SECONDS`, and documentation sentences that state the previous timeout in
+seconds. It is not a general-purpose semantic code or prose analyser. The
+optional deterministic-only mode skips the model call; no Ollama response is
+fabricated.
 
 ## Project
 

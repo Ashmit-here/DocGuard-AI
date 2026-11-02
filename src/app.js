@@ -21,11 +21,45 @@ function getAllowedOrigins(options) {
   return process.env.NODE_ENV === 'production' ? new Set() : LOCAL_FRONTEND_ORIGINS;
 }
 
+function getRequestOrigin(request) {
+  const forwardedProtocol = request.headers['x-forwarded-proto']?.split(',')[0]?.trim();
+  const protocol = forwardedProtocol || (request.socket.encrypted ? 'https' : 'http');
+  const host = request.headers.host;
+  if (!host) return null;
+
+  try {
+    return new URL(`${protocol}://${host}`).origin;
+  } catch {
+    return null;
+  }
+}
+
+function isLoopbackDevelopmentOrigin(origin) {
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === 'http:'
+      && ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isOriginAllowed(request, origin, options, allowedOrigins) {
+  if (allowedOrigins.has(origin) || origin === getRequestOrigin(request)) {
+    return true;
+  }
+
+  const hasExplicitPolicy = Array.isArray(options.corsOrigins)
+    || process.env.CORS_ALLOWED_ORIGINS !== undefined
+    || process.env.NODE_ENV === 'production';
+  return !hasExplicitPolicy && isLoopbackDevelopmentOrigin(origin);
+}
+
 function applyCors(request, response, options) {
   const origin = request.headers.origin;
   const allowedOrigins = getAllowedOrigins(options);
 
-  if (origin && !allowedOrigins.has(origin)) {
+  if (origin && !isOriginAllowed(request, origin, options, allowedOrigins)) {
     sendJson(response, 403, {
       error: {
         code: 'CORS_ORIGIN_NOT_ALLOWED',
